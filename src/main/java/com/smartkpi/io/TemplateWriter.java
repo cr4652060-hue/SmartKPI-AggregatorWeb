@@ -1,47 +1,76 @@
 package com.smartkpi.io;
 
-import com.smartkpi.model.BranchMetric;
 import org.apache.poi.ss.usermodel.*;
 
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class TemplateWriter {
-    public void writeResourceMetrics(Sheet sheet, List<BranchMetric> metrics, Map<String, Integer> cols) {
-        int dataStart = HeaderLocator.DATA_START;
-        clearDataRegion(sheet, cols, dataStart, Math.max(sheet.getLastRowNum(), dataStart + metrics.size() + 50));
 
-        for (int i = 0; i < metrics.size(); i++) {
-            BranchMetric m = metrics.get(i);
-            int rowIdx = dataStart + i;
-            Row row = sheet.getRow(rowIdx);
-            if (row == null) row = sheet.createRow(rowIdx);
+    public void writeMetrics(Sheet sheet,
+                             HeaderLocator.TemplateLayout layout,
+                             List<Map<String, Object>> rows,
+                             Set<String> writableKeys) {
+        Row sample = Optional.ofNullable(sheet.getRow(layout.dataStartRowIndex()))
+                .orElseGet(() -> sheet.createRow(layout.dataStartRowIndex()));
 
-            write(row, cols.get("branch"), m.branchName());
-            write(row, cols.get("deviceTotal"), m.deviceTotal());
-            write(row, cols.get("alarmDuration"), m.sumResourceDuration());
-            write(row, cols.get("businessTime"), m.businessTime());
-            write(row, cols.get("resourceRate"), m.computedRate());
-        }
-    }
+        Map<String, Integer> existingRowByBranch = buildExistingRowIndex(sheet, layout);
 
-    private void clearDataRegion(Sheet sheet, Map<String, Integer> cols, int start, int end) {
-        for (int r = start; r <= end; r++) {
-            Row row = sheet.getRow(r);
-            if (row == null) continue;
-            for (Integer c : cols.values()) {
-                Cell cell = row.getCell(c, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
-                cell.setBlank();
+        for (int i = 0; i < rows.size(); i++) {
+            Map<String, Object> data = rows.get(i);
+            String branch = Objects.toString(data.getOrDefault("branch", ""), "").trim();
+            int rowIndex = existingRowByBranch.getOrDefault(branch, layout.dataStartRowIndex() + i);
+
+            Row row = sheet.getRow(rowIndex);
+            if (row == null) {
+                row = sheet.createRow(rowIndex);
+                cloneRowStyle(sample, row);
+            }
+            writeCell(row, layout.columns().get("branch"), branch);
+
+            for (String key : writableKeys) {
+                if (!data.containsKey(key)) continue;
+                writeCell(row, layout.columns().get(key), data.get(key));
             }
         }
     }
 
-    private void write(Row row, Integer col, Object value) {
+    private Map<String, Integer> buildExistingRowIndex(Sheet sheet, HeaderLocator.TemplateLayout layout) {
+        Map<String, Integer> map = new LinkedHashMap<>();
+        Integer branchCol = layout.columns().get("branch");
+        if (branchCol == null) return map;
+        DataFormatter formatter = new DataFormatter();
+        for (int r = layout.dataStartRowIndex(); r <= sheet.getLastRowNum(); r++) {
+            Row row = sheet.getRow(r);
+            if (row == null) continue;
+            String branch = formatter.formatCellValue(row.getCell(branchCol, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL)).trim();
+            if (!branch.isBlank()) {
+                map.putIfAbsent(branch, r);
+            }
+        }
+        return map;
+    }
+
+    private void cloneRowStyle(Row source, Row target) {
+        target.setHeight(source.getHeight());
+        for (int c = source.getFirstCellNum(); c < source.getLastCellNum(); c++) {
+            if (c < 0) continue;
+            Cell srcCell = source.getCell(c, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL);
+            if (srcCell == null) continue;
+            Cell targetCell = target.getCell(c, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
+            targetCell.setCellStyle(srcCell.getCellStyle());
+            if (srcCell.getCellType() == CellType.FORMULA) {
+                targetCell.setCellFormula(srcCell.getCellFormula());
+            }
+        }
+    }
+
+    private void writeCell(Row row, Integer col, Object value) {
         if (col == null) return;
         Cell cell = row.getCell(col, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
         if (value == null) {
-            cell.setBlank();
-        } else if (value instanceof Number n) {
+            return;
+        }
+        if (value instanceof Number n) {
             cell.setCellValue(n.doubleValue());
         } else {
             cell.setCellValue(value.toString());

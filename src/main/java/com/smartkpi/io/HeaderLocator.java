@@ -2,30 +2,67 @@ package com.smartkpi.io;
 
 import org.apache.poi.ss.usermodel.*;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 public class HeaderLocator {
-    public static final int HEADER_ROW = 2;
-    public static final int FILTER_ROW = 3;
-    public static final int DATA_START = 4;
+    private static final List<String> BRANCH_HEADERS = List.of("所属网点", "所属机构", "网点");
 
-    public Map<String, Integer> locateResourceColumns(Sheet sheet) {
-        Map<String, Integer> idx = new HashMap<>();
-        Row header = sheet.getRow(HEADER_ROW);
-        Row filter = sheet.getRow(FILTER_ROW);
+    public TemplateLayout locate(Sheet sheet, int configuredDataStart) {
         DataFormatter formatter = new DataFormatter();
-
-        for (int c = 0; c <= Math.max(header.getLastCellNum(), filter.getLastCellNum()); c++) {
-            String h = formatter.formatCellValue(header.getCell(c, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL)).trim();
-            String f = formatter.formatCellValue(filter.getCell(c, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL)).trim();
-            if ("所属网点".equals(h)) idx.put("branch", c);
-            if ("设备总台数".equals(h)) idx.put("deviceTotal", c);
-            if ("营业时长".equals(h)) idx.put("businessTime", c);
-            if ("资源预警率".equals(h)) idx.put("resourceRate", c);
-            if ("合计".equals(h) && "次数".equals(f)) idx.put("alarmCount", c);
-            if ("合计".equals(h) && "时长".equals(f)) idx.put("alarmDuration", c);
+        int headerRowIndex = findHeaderRow(sheet, formatter);
+        if (headerRowIndex < 0) {
+            throw new IllegalStateException("未识别机构模板表头行");
         }
-        return idx;
+        Row header = sheet.getRow(headerRowIndex);
+        Map<String, Integer> cols = new HashMap<>();
+        for (int c = 0; c < header.getLastCellNum(); c++) {
+            String value = formatter.formatCellValue(header.getCell(c, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL)).trim();
+            if (BRANCH_HEADERS.contains(value)) cols.put("branch", c);
+            if ("设备总台数".equals(value)) cols.put("deviceTotal", c);
+            if ("营业时长".equals(value)) cols.put("businessTime", c);
+            if (value.contains("资源预警率")) cols.put("resourceRate", c);
+            if (value.contains("开机率")) cols.put("bootRate", c);
+            if (value.contains("停机") && value.contains("时长")) cols.put("bootDuration", c);
+            if ("合计".equals(value)) cols.put("totalTitle", c);
+        }
+
+        Row subHeader = headerRowIndex + 1 <= sheet.getLastRowNum() ? sheet.getRow(headerRowIndex + 1) : null;
+        if (subHeader != null && cols.containsKey("totalTitle")) {
+            int c = cols.get("totalTitle");
+            String sub = formatter.formatCellValue(subHeader.getCell(c, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL)).trim();
+            if ("时长".equals(sub)) cols.put("alarmDuration", c);
+        }
+
+        if (!cols.containsKey("alarmDuration")) {
+            for (int c = 0; c < header.getLastCellNum(); c++) {
+                String v = formatter.formatCellValue(header.getCell(c, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL)).trim();
+                if (v.contains("合计") && v.contains("时长")) {
+                    cols.put("alarmDuration", c);
+                    break;
+                }
+            }
+        }
+
+        int dataStart = configuredDataStart > 0 ? configuredDataStart - 1 : headerRowIndex + 1;
+        return new TemplateLayout(headerRowIndex, dataStart, cols);
     }
+
+    private int findHeaderRow(Sheet sheet, DataFormatter formatter) {
+        for (int r = 0; r <= Math.min(sheet.getLastRowNum(), 15); r++) {
+            Row row = sheet.getRow(r);
+            if (row == null) continue;
+            boolean hasBranch = false;
+            for (int c = 0; c < row.getLastCellNum(); c++) {
+                String value = formatter.formatCellValue(row.getCell(c, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL)).trim();
+                if (BRANCH_HEADERS.contains(value)) {
+                    hasBranch = true;
+                    break;
+                }
+            }
+            if (hasBranch) return r;
+        }
+        return -1;
+    }
+
+    public record TemplateLayout(int headerRowIndex, int dataStartRowIndex, Map<String, Integer> columns) {}
 }
